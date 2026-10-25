@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pyroom: Python editor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@500;700&display=swap">
+<style>
+:root{--bg:#000;--panel:#0b0b0b;--line:#222;--ink:#f2f2f2;--dim:#8a8a8a;--acc:#3d6bff;--err:#ff6b6b;
+--mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;--ui:Inter,system-ui,sans-serif}
+html[data-theme="light"]{--bg:#fff;--panel:#f6f6f6;--line:#dcdcdc;--ink:#0a0a0a;--dim:#6b6b6b;--acc:#1f49e0;--err:#c62828}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--ui);display:flex;flex-direction:column;height:100dvh;
+padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line)}
+h1{font-size:15px;margin:0;flex:1;letter-spacing:.2px}
+#status{font:12px var(--mono);color:var(--dim)}
+button{font:600 13px var(--ui);border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:8px 14px;border-radius:8px;cursor:pointer}
+button:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--acc);outline-offset:-2px}
+#run,#ok{background:var(--acc);border-color:var(--acc);color:#fff}
+#run:disabled{opacity:.5;cursor:wait}
+#stop{background:var(--err);border-color:var(--err);color:#fff}
+main{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr}
+section{display:flex;flex-direction:column;min-height:0;min-width:0}
+#edpane{border-right:1px solid var(--line)}
+.label{font:600 12px var(--ui);color:var(--dim);padding:6px 12px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;justify-content:space-between}
+.ed{flex:1;display:flex;min-height:0}
+#gut{font:14px/1.6 var(--mono);color:var(--dim);text-align:right;padding:12px 8px;overflow:hidden;user-select:none;border-right:1px solid var(--line);background:var(--panel);white-space:pre}
+textarea{font:14px/1.6 var(--mono);background:var(--bg);color:var(--ink);border:0;resize:none;padding:12px;tab-size:4;white-space:pre;overflow:auto}
+#code{flex:1;min-width:0}
+#stdin{height:84px;border-top:1px solid var(--line);white-space:pre-wrap}
+#outwrap{flex:1;min-height:0;overflow:auto}
+#out{margin:0;padding:12px;font:14px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word}
+#figs img{display:block;max-width:calc(100% - 24px);margin:0 12px 12px;background:#fff;border-radius:6px}
+.e{color:var(--err)}.m{color:var(--dim)}
+dialog{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:12px;width:min(90vw,360px);padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+#dlgq{display:block;font:14px var(--mono);margin-bottom:10px;white-space:pre-wrap;word-break:break-word}
+#dlgin{width:100%;font:14px var(--mono);background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px}
+.row{display:flex;flex-direction:row-reverse;gap:8px;margin-top:12px}
+@media (max-width:800px){
+ main{grid-template-columns:1fr;grid-template-rows:1fr 1.2fr}
+ #outpane{order:-1;border-bottom:1px solid var(--line)}
+ #edpane{border-right:0}
+ #stdin{height:56px}
+}
+</style>
+</head>
+<body>
+<header>
+ <h1>Pyroom</h1>
+ <span id="status">Loading Python…</span>
+ <button id="theme" aria-label="Switch theme">Light</button>
+ <button id="run" disabled>Run</button>
+ <button id="stop" hidden>Stop</button>
+</header>
+<main>
+ <section id="edpane">
+  <div class="label"><span>main.py</span><span>Ctrl+Enter to run</span></div>
+  <div class="ed"><div id="gut">1</div><textarea id="code" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea></div>
+  <div class="label"><span>Input (optional, one line per input())</span></div>
+  <textarea id="stdin" spellcheck="false" placeholder="Leave empty to get pop-ups"></textarea>
+ </section>
+ <section id="outpane">
+  <div class="label"><span>Output</span><span id="clear" role="button" tabindex="0" style="cursor:pointer">Clear</span></div>
+  <div id="outwrap"><pre id="out"></pre><div id="figs"></div></div>
+ </section>
+</main>
+<dialog id="dlg">
+ <form method="dialog">
+  <label id="dlgq" for="dlgin"></label>
+  <input id="dlgin" autocomplete="off" autocapitalize="off">
+  <div class="row"><button id="ok" value="ok">OK</button><button value="cancel">Cancel</button></div>
+ </form>
+</dialog>
+
+<script type="text/js-worker" id="w">
+importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
+let py;
+const boot=(async()=>{
+ py=await loadPyodide();
+ py.setStdout({batched:s=>postMessage({t:"out",s:s+"\n"})});
+ py.setStderr({batched:s=>postMessage({t:"out",s:s+"\n",e:1})});
+ py.runPython(`import os,sys,builtins
+os.environ["MPLBACKEND"]="AGG"
+class _NeedInput(BaseException):
+    pass
+def _input(prompt=""):
+    prompt=str(prompt)
+    v=_js_next(prompt)
+    if v is None:
+        raise _NeedInput(prompt)
+    sys.stdout.write(prompt+v+chr(10))
+    return v
+builtins.input=_input`);
+ postMessage({t:"ready"});
+})().catch(()=>postMessage({t:"fail"}));
+
+onmessage=async ev=>{
+ await boot;
+ const {code,inputs,seed}=ev.data;
+ let i=0,need=null,err=null;
+ py.globals.set("_js_next",p=>{ if(i<inputs.length) return inputs[i++]; need=String(p); return null; });
+ try{
+  await py.loadPackagesFromImports(code);
+  postMessage({t:"started"});
+  py.runPython("import random\nrandom.seed("+seed+")");
+  const ns=py.globals.get("dict")();
+  ns.set("__name__","__main__");
+  await py.runPythonAsync(code,{globals:ns});
+  ns.destroy();
+ }catch(e){
+  if(need===null) err=String(e.message||e);
+ }
+ let imgs=[];
+ try{
+  const j=py.runPython(`import sys,io,json,base64
+sys.stdout.flush()
+sys.stderr.flush()
+r=[]
+if "matplotlib.pyplot" in sys.modules:
+    import matplotlib.pyplot as plt
+    for n in plt.get_fignums():
+        b=io.BytesIO()
+        plt.figure(n).savefig(b,format="png",bbox_inches="tight",facecolor="white")
+        r.append(base64.b64encode(b.getvalue()).decode())
+    plt.close("all")
+json.dumps(r)`);
+  imgs=JSON.parse(j);
+ }catch(e){}
+ if(need!==null) postMessage({t:"need",p:need});
+ else postMessage({t:"done",err,imgs});
+};
+</script>
+
+<script>
+const $=id=>document.getElementById(id);
+const code=$("code"),gut=$("gut"),out=$("out"),figs=$("figs"),wrap=$("outwrap"),
+ run=$("run"),stopB=$("stop"),status=$("status"),dlg=$("dlg"),dlgin=$("dlgin"),dlgq=$("dlgq");
+const SAMPLE=`import re
+
+name = input("Name: ")
+text = input("Text: ")
+words = re.findall(r"\\w+", text)
+print(f"Hi {name}, you typed {len(words)} words.")
+`;
+
+/* theme */
+function setTheme(t){document.documentElement.dataset.theme=t;$("theme").textContent=t==="dark"?"Light":"Dark";try{localStorage.setItem("theme",t)}catch(e){}}
+let saved=null;try{saved=localStorage.getItem("theme")}catch(e){}
+setTheme(saved||(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"));
+$("theme").onclick=()=>setTheme(document.documentElement.dataset.theme==="dark"?"light":"dark");
+
+/* editor */
+try{code.value=localStorage.getItem("code")||SAMPLE}catch(e){code.value=SAMPLE}
+function lines(){const n=code.value.split("\n").length;gut.textContent=Array.from({length:n},(_,i)=>i+1).join("\n");gut.scrollTop=code.scrollTop}
+code.addEventListener("input",()=>{lines();try{localStorage.setItem("code",code.value)}catch(e){}});
+code.addEventListener("scroll",()=>gut.scrollTop=code.scrollTop);
+code.addEventListener("keydown",e=>{
+ if(e.key==="Tab"){e.preventDefault();const s=code.selectionStart;code.setRangeText("    ",s,code.selectionEnd,"end");code.dispatchEvent(new Event("input"))}
+ if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){e.preventDefault();go()}
+ else if(e.key==="Enter"){
+  const s=code.selectionStart,before=code.value.slice(0,s),ln=before.slice(before.lastIndexOf("\n")+1);
+  let ind=ln.match(/^\s*/)[0];if(/:\s*$/.test(ln))ind+="    ";
+  e.preventDefault();code.setRangeText("\n"+ind,s,code.selectionEnd,"end");code.dispatchEvent(new Event("input"));
+ }
+});
+lines();
+
+/* output */
+function put(txt,cls){const s=document.createElement("span");if(cls)s.className=cls;s.textContent=txt;out.appendChild(s);wrap.scrollTop=wrap.scrollHeight}
+$("clear").onclick=()=>{out.textContent="";figs.textContent=""};
+function showFigs(a){(a||[]).forEach(b=>{const im=new Image();im.alt="Plot";im.src="data:image/png;base64,"+b;figs.appendChild(im)})}
+
+/* python worker */
+const LIMIT=20000;
+let worker=null,tm=0,answers=[],seed=0;
+function idle(){clearTimeout(tm);run.hidden=false;run.disabled=false;stopB.hidden=true;status.textContent="Python ready"}
+function spawn(){
+ if(worker)worker.terminate();
+ clearTimeout(tm);
+ run.hidden=false;run.disabled=true;stopB.hidden=true;status.textContent="Loading Python…";
+ worker=new Worker(URL.createObjectURL(new Blob([$("w").textContent],{type:"text/javascript"})));
+ worker.onmessage=onMsg;
+}
+function stop(msg){spawn();if(msg)put(msg+"\n","e")}
+function arm(){clearTimeout(tm);tm=setTimeout(()=>stop("Stopped: the program ran longer than 20 seconds (maybe an endless loop)."),LIMIT)}
+function onMsg(ev){
+ const m=ev.data;
+ if(m.t==="ready")idle();
+ else if(m.t==="fail"){status.textContent="Failed to load";put("Could not load Python. Check your internet connection and reload.\n","e")}
+ else if(m.t==="out")put(m.s,m.e?"e":"");
+ else if(m.t==="started"){status.textContent="Running…";arm()}
+ else if(m.t==="need"){clearTimeout(tm);status.textContent="Waiting for input…";ask(m.p)}
+ else if(m.t==="done"){
+  if(m.err)put(m.err.trim()+"\n","e");else put("\n[finished]","m");
+  showFigs(m.imgs);idle();
+ }
+}
+function exec(){
+ out.textContent="";figs.textContent="";
+ run.hidden=true;stopB.hidden=false;status.textContent="Loading packages…";
+ worker.postMessage({code:code.value,inputs:answers,seed});
+}
+function go(){
+ if(run.hidden||run.disabled)return;
+ const v=$("stdin").value.replace(/\n$/,"");
+ answers=v?v.split("\n"):[];
+ seed=Math.floor(Math.random()*1e9);
+ exec();
+}
+
+/* pop-up input: the program is re-run from the top with each new answer */
+function ask(p){dlgq.textContent=p||"Input";dlgin.value="";dlg.returnValue="";dlg.showModal();dlgin.focus()}
+dlg.addEventListener("close",()=>{
+ if(dlg.returnValue==="ok"){answers.push(dlgin.value);exec()}
+ else stop("Input cancelled.");
+});
+
+run.onclick=go;
+stopB.onclick=()=>stop("Stopped.");
+spawn();
+</script>
+</body>
+</html>
